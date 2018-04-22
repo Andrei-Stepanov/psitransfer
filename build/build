@@ -1,0 +1,62 @@
+#!/bin/bash
+
+set -eu
+
+fix_permissions() {
+    [ -n "$1" ] && [ -e "$1" ] || return
+    find $1 -exec chgrp 0 {} \;
+    find $1 -exec chmod g+rw {} \;
+    find $1 -type d -exec chmod g+x {} +
+}
+
+echo "# Current directory: $PWD"
+cwdir="$(pwd)"
+
+echo "# Put files to container."
+rsync -Pav fs/ /
+
+echo "# Deploy CA certificates."
+if [ -d certs ]; then
+    for cert in certs/*.crt; do
+        [ -e "$cert" ] || break
+        echo "# Deploy certificate: $cert."
+        trust anchor "$cert";
+    done
+fi
+
+git clone "https://github.com/psi-4ward/psitransfer.git"
+cd psitransfer
+
+# Put files necessary for build to $HOME
+rsync -Pav lib app public *.js package.json README.md "$HOME"
+
+echo "# Rebuild the frontend apps."
+cd "$HOME/app"
+NODE_ENV=dev npm install
+npm run build
+cd "$HOME"
+rm -rf app
+echo "# Install backend dependencies."
+npm install
+
+cd "$cwdir"
+
+rsync -Pav pre-init run "$HOME"
+
+PSITRANSFER_UPLOAD_DIR="${PSITRANSFER_UPLOAD_DIR:-/data}"
+mkdir "$PSITRANSFER_UPLOAD_DIR"
+
+echo "# Fix files permissions."
+hfiles=()
+hfiles+=('/etc/passwd')
+hfiles+=("$PSITRANSFER_UPLOAD_DIR")
+hfiles+=("$HOME")
+
+# Grant access to files for container user.
+for i in "${hfiles[@]}"; do
+    echo "# Grant permissions to container user: $i"
+    fix_permissions "$i"
+done
+
+echo "# Removing $PWD"
+rm -rf "$PWD"
